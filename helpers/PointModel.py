@@ -219,4 +219,44 @@ class PointModel:
             
         except Exception as e:
             raise ValueError(f"Error reading PLY file: {str(e)}")
+        
+    def recenter_point_cloud(model):
+        """
+        Recenter the point cloud to have its centroid at the origin.
+        """
+        with torch.no_grad():
+            # Calculate centroid
+            centroid = model._xyz.mean(dim=0, keepdim=True)
+            
+            # Recenter points
+            model._xyz -= centroid
+            
+        return centroid.squeeze()
+
+
+    def normalize_scale(model, target_scale=1.0):
+        """
+        Normalize the scale of the point cloud based on its extent.
+        """
+        with torch.no_grad():
+            # Calculate bounding box extent
+            min_coords = model._xyz.min(dim=0)[0]
+            max_coords = model._xyz.max(dim=0)[0]
+            extent = max_coords - min_coords
+            
+            # Find maximum extent across all dimensions
+            max_extent = extent.max()
+            
+            # Calculate scale factor
+            scale_factor = target_scale / max_extent
+            
+            # Scale the positions
+            model._xyz *= scale_factor
+            
+            # Scale the Gaussian splat scales
+            model._scaling += torch.log(torch.tensor(scale_factor, 
+                                                    device=model._scaling.device,
+                                                    dtype=model._scaling.dtype))
+            
+        return scale_factor.item()
 

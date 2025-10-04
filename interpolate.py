@@ -76,7 +76,6 @@ class GaussianInterpolator:
                                         batch_size=batch_size)
             self.correspondences[(i, j)] = idx_map
 
-
     def correspond_one_to_one(self,
         a_xyz: torch.Tensor,
         b_xyz: torch.Tensor,
@@ -292,13 +291,6 @@ class GaussianInterpolator:
         pm.save_ply(path)
 
 if(__name__ == "__main__"):
-
-    # directory = "C:/Users/felix/Projects/EisbaerenBerlin/Taping/"
-
-    # output_dir = "C:/Users/felix/Projects/EisbaerenBerlin/Taping/Output/"
-
-    # ply_files = sorted([f for f in os.listdir(directory) if f.endswith('.ply')])
-
     parser = argparse.ArgumentParser(
         description="Interpolates between 3D point cloud models (.ply files).",
         formatter_class=argparse.RawTextHelpFormatter # For better help text formatting
@@ -357,6 +349,14 @@ if(__name__ == "__main__"):
         default=2048,
         help="Size of point batches to process. Lower for less GPU memory usage."
     )
+    parser.add_argument(
+        "--recenter_models", 
+        action="store_true", 
+        help="Recenter all the used models before interpolating")
+    parser.add_argument(
+        "--normalize_scales", 
+        action="store_true", 
+        help="Normalize the scale of all models before interpolating")
 
     args = parser.parse_args()
 
@@ -389,6 +389,10 @@ if(__name__ == "__main__"):
     for ply_file in ply_files:
         pm = PointModel()
         pm.load_ply(os.path.join(args.directory, ply_file))
+        if(args.recenter_models):
+            pm.recenter_point_cloud()
+        if(args.normalize_scales):
+            pm.normalize_scale(10)
         point_models.append(pm)
     
     interp = GaussianInterpolator(device='cuda') 
