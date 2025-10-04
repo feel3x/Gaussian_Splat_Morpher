@@ -54,7 +54,7 @@ class GaussianInterpolator:
         
         return result
 
-    def build_correspondences(self, force_rebuild: bool = False, show_progress: bool = True):
+    def build_correspondences(self, spatial_weight: float = 0.7, color_weight: float = 0.3, distance_threshold: float = None, force_rebuild: bool = False, show_progress: bool = True):
         """Build pairwise correspondences for consecutive model pairs.
         """
         if not force_rebuild and self.correspondences:
@@ -68,10 +68,11 @@ class GaussianInterpolator:
             idx_map = self.correspond_one_to_one(
                                         mi._xyz,
                                         mj._xyz,
-                                        spatial_weight=0.7, 
-                                        color_weight=0.3,
+                                        spatial_weight=spatial_weight, 
+                                        color_weight=color_weight,
                                         a_features_dc=mi._features_dc,
                                         b_features_dc=mj._features_dc,
+                                        distance_threshold=distance_threshold,
                                         batch_size=2048)
             self.correspondences[(i, j)] = idx_map
 
@@ -84,6 +85,7 @@ class GaussianInterpolator:
         a_features_dc: torch.Tensor = None,
         b_features_dc: torch.Tensor = None,
         batch_size: int = 1024,
+        distance_threshold: float = None,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ):
         """
@@ -121,8 +123,13 @@ class GaussianInterpolator:
         n_small, n_large = small_feat.shape[0], large_feat.shape[0]
 
         large_used = torch.zeros(n_large, dtype=torch.bool, device=device)
+        small_used = torch.zeros(n_small, dtype=torch.bool, device=device)
         matched_small_idx = []
         matched_large_idx = []
+
+        # Track leftovers from threshold filtering
+        skipped_small_idx = []
+        skipped_large_idx = []
 
         for start in tqdm(range(0, n_small, batch_size), total=int(n_small/batch_size+1), desc="Matching points", leave=False):
             end = min(start + batch_size, n_small)
@@ -139,9 +146,17 @@ class GaussianInterpolator:
                 if best_dist == float("inf"):
                     # all large set points used
                     break
+
+                if distance_threshold is not None and best_dist > distance_threshold:
+                    # Skip this match — mark both as leftovers
+                    skipped_small_idx.append(start + i)
+                    skipped_large_idx.append(best_j.item())
+                    continue
+
                 matched_small_idx.append(start + i)
                 matched_large_idx.append(best_j.item())
                 large_used[best_j] = True
+                small_used[start + i] = True
                 dists[:, best_j] = float("inf")  # prevent reuse
 
             del dists
@@ -150,19 +165,29 @@ class GaussianInterpolator:
         matched_small_idx = torch.tensor(matched_small_idx, device=device, dtype=torch.long)
         matched_large_idx = torch.tensor(matched_large_idx, device=device, dtype=torch.long)
 
-        # Leftover: only from the larger model
+        skipped_small_idx = torch.tensor(skipped_small_idx, device=device, dtype=torch.long)
+        skipped_large_idx = torch.tensor(skipped_large_idx, device=device, dtype=torch.long)
+
+        # Compute leftovers
+        leftover_small_idx = torch.nonzero(~small_used, as_tuple=False).squeeze(1)
         leftover_large_idx = torch.nonzero(~large_used, as_tuple=False).squeeze(1)
+
+        # Combine threshold-skipped points with leftovers
+        leftover_small_idx = torch.unique(torch.cat([leftover_small_idx, skipped_small_idx]))
+        leftover_large_idx = torch.unique(torch.cat([leftover_large_idx, skipped_large_idx]))
 
         if small_is_a:
             matched_a_idx = matched_small_idx
             matched_b_idx = matched_large_idx
-            leftover_a_idx = torch.tensor([], dtype=torch.long, device=device)
+            leftover_a_idx = leftover_small_idx
             leftover_b_idx = leftover_large_idx
         else:
             matched_a_idx = matched_large_idx
             matched_b_idx = matched_small_idx
             leftover_a_idx = leftover_large_idx
-            leftover_b_idx = torch.tensor([], dtype=torch.long, device=device)
+            leftover_b_idx = leftover_small_idx
+
+        print(str(min(leftover_a_idx.shape[0], leftover_b_idx.shape[0])) + " points over distance threshold")
 
         return matched_a_idx, matched_b_idx, leftover_a_idx, leftover_b_idx
 
@@ -198,33 +223,6 @@ class GaussianInterpolator:
         src_idx = matched_a
         tgt_idx = matched_b
 
-        fade_out_mask = torch.zeros_like(src_idx, dtype=torch.bool, device=device)
-        fade_in_mask = torch.zeros_like(tgt_idx, dtype=torch.bool, device=device)
-
-        # Fade-out: points only in A
-        if len(leftover_a) > 0:
-            fade_out_mask = torch.cat([
-                torch.zeros_like(src_idx, dtype=torch.bool, device=device),
-                torch.ones(len(leftover_a), dtype=torch.bool, device=device),
-            ])
-            src_idx = torch.cat([src_idx, leftover_a])
-            tgt_idx = torch.cat([
-                tgt_idx,
-                torch.randint(0, b._xyz.shape[0], (len(leftover_a),), device=device)
-            ])
-
-        # Fade-in: points only in B
-        if len(leftover_b) > 0:
-            fade_in_mask = torch.cat([
-                torch.zeros_like(tgt_idx, dtype=torch.bool, device=device),
-                torch.ones(len(leftover_b), dtype=torch.bool, device=device),
-            ])
-            src_idx = torch.cat([
-                src_idx,
-                torch.randint(0, a._xyz.shape[0], (len(leftover_b),), device=device)
-            ])
-            tgt_idx = torch.cat([tgt_idx, leftover_b])
-
         pos_a = a._xyz[src_idx].to(device)
         pos_b = b._xyz[tgt_idx].to(device)
 
@@ -251,22 +249,31 @@ class GaussianInterpolator:
         out_rot = self.slerp(rot_a, rot_b, t)
         out_op = op_a * (1.0 - t) + op_b * t
 
-        # Handle fade-in / fade-out 
-        if fade_in_mask.any():
-            out_xyz[fade_in_mask] = pos_b[fade_in_mask]
-            out_fdc[fade_in_mask] = fdc_b[fade_in_mask]
-            out_frest[fade_in_mask] = fret_b[fade_in_mask]
-            out_scale[fade_in_mask] = -10.0 * (1.0 - t) + scale_b[fade_in_mask] * t
-            out_rot[fade_in_mask] = rot_b[fade_in_mask]
-            out_op[fade_in_mask] = -10.0 * (1.0 - t) + op_b[fade_in_mask] * t
+        # Handle fade-out points (leftovers from A)
+        fade_out_xyz = a._xyz[leftover_a]
+        fade_out_fdc = a._features_dc[leftover_a]
+        fade_out_frest = a._features_rest[leftover_a]
+        fade_out_rot = a._rotation[leftover_a]
+        # Interpolate scale and opacity to disappear
+        fade_out_scale = a._scaling[leftover_a] * (1.0 - t) + -10.0 * t
+        fade_out_op = a._opacity[leftover_a] * (1.0 - t) + -10.0 * t
 
-        if fade_out_mask.any():
-            out_xyz[fade_out_mask] = pos_a[fade_out_mask]
-            out_fdc[fade_out_mask] = fdc_a[fade_out_mask]
-            out_frest[fade_out_mask] = fret_a[fade_out_mask]
-            out_scale[fade_out_mask] = scale_a[fade_out_mask] * (1.0 - t) + -10.0 * t
-            out_rot[fade_out_mask] = rot_a[fade_out_mask]
-            out_op[fade_out_mask] = op_a[fade_out_mask] * (1.0 - t) + -10.0 * t
+        # Handle fade-in points (leftovers from B)
+        fade_in_xyz = b._xyz[leftover_b]
+        fade_in_fdc = b._features_dc[leftover_b]
+        fade_in_frest = b._features_rest[leftover_b]
+        fade_in_rot = b._rotation[leftover_b]
+        # Interpolate scale and opacity to appear
+        fade_in_scale = -10.0 * (1.0 - t) + b._scaling[leftover_b] * t
+        fade_in_op = -10.0 * (1.0 - t) + b._opacity[leftover_b] * t
+
+        # Concatenate all parts
+        out_xyz = torch.cat([out_xyz, fade_out_xyz, fade_in_xyz], dim=0)
+        out_fdc = torch.cat([out_fdc, fade_out_fdc, fade_in_fdc], dim=0)
+        out_frest = torch.cat([out_frest, fade_out_frest, fade_in_frest], dim=0)
+        out_scale = torch.cat([out_scale, fade_out_scale, fade_in_scale], dim=0)
+        out_rot = torch.cat([out_rot, fade_out_rot, fade_in_rot], dim=0)
+        out_op = torch.cat([out_op, fade_out_op, fade_in_op], dim=0)
 
         # Construct output model
         out_model = type(a)(sh_degree=getattr(a, "max_sh_degree", None))
@@ -301,7 +308,7 @@ if(__name__ == "__main__"):
     
     interp = GaussianInterpolator(device='cuda') 
     interp.load_pointmodels(point_models)
-    interp.build_correspondences()    
+    interp.build_correspondences(distance_threshold=3)    
 
     models_to_create = 10
 
