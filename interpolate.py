@@ -54,7 +54,7 @@ class GaussianInterpolator:
         
         return result
 
-    def build_correspondences(self, spatial_weight: float = 0.7, color_weight: float = 0.3, distance_threshold: float = None, force_rebuild: bool = False, show_progress: bool = True):
+    def build_correspondences(self, spatial_weight: float = 0.7, color_weight: float = 0.3, distance_threshold: float = None, batch_size = 2048, force_rebuild: bool = False, show_progress: bool = True):
         """Build pairwise correspondences for consecutive model pairs.
         """
         if not force_rebuild and self.correspondences:
@@ -73,7 +73,7 @@ class GaussianInterpolator:
                                         a_features_dc=mi._features_dc,
                                         b_features_dc=mj._features_dc,
                                         distance_threshold=distance_threshold,
-                                        batch_size=2048)
+                                        batch_size=batch_size)
             self.correspondences[(i, j)] = idx_map
 
 
@@ -351,6 +351,12 @@ if(__name__ == "__main__"):
         default=None,
         help="Max distance for point correspondences. If not set, no threshold is used."
     )
+    parser.add_argument(
+        '--batch_size', 
+        type=int, 
+        default=2048,
+        help="Size of point batches to process. Lower for less GPU memory usage."
+    )
 
     args = parser.parse_args()
 
@@ -387,7 +393,7 @@ if(__name__ == "__main__"):
     
     interp = GaussianInterpolator(device='cuda') 
     interp.load_pointmodels(point_models)
-    interp.build_correspondences(spatial_weight=args.spatial_weight, color_weight=args.color_weight, distance_threshold=args.distance_threshold)    
+    interp.build_correspondences(spatial_weight=args.spatial_weight, color_weight=args.color_weight, distance_threshold=args.distance_threshold, batch_size=args.batch_size)    
 
     models_to_create = args.models_to_create
 
