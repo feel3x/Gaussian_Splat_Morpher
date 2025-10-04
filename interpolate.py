@@ -8,11 +8,11 @@ Note:
 This file contains original code by Felix Hirt, licensed under MIT.
 """
 
-from typing import List, Optional, Tuple
+from typing import List, Optional
 import torch
-import numpy as np
 from tqdm import tqdm
 import os
+import argparse
 
 from helpers.PointModel import PointModel
 
@@ -293,26 +293,105 @@ class GaussianInterpolator:
 
 if(__name__ == "__main__"):
 
-    directory = "C:/Users/felix/Projects/EisbaerenBerlin/Taping/"
+    # directory = "C:/Users/felix/Projects/EisbaerenBerlin/Taping/"
 
-    output_dir = "C:/Users/felix/Projects/EisbaerenBerlin/Taping/Output/"
+    # output_dir = "C:/Users/felix/Projects/EisbaerenBerlin/Taping/Output/"
 
-    ply_files = sorted([f for f in os.listdir(directory) if f.endswith('.ply')])
+    # ply_files = sorted([f for f in os.listdir(directory) if f.endswith('.ply')])
+
+    parser = argparse.ArgumentParser(
+        description="Interpolates between 3D point cloud models (.ply files).",
+        formatter_class=argparse.RawTextHelpFormatter # For better help text formatting
+    )
+
+    #Input Arguments
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
+        '-d', '--directory', 
+        type=str, 
+        help="Path to a directory containing .ply models."
+    )
+    input_group.add_argument(
+        '-m', '--models', 
+        nargs='+',  # '+' means one or more arguments
+        type=str, 
+        help="Paths to two or more individual .ply model files."
+    )
+
+    # --- Output Argument ---
+    parser.add_argument(
+        '-o', '--output_dir', 
+        type=str, 
+        required=True, 
+        help="Required. Path to the directory where output will be saved."
+    )
+
+    # --- Optional Interpolation Parameters ---
+    parser.add_argument(
+        '--models_to_create', 
+        type=int, 
+        default=10, 
+        help="Number of intermediate models to generate. Default: 10"
+    )
+    parser.add_argument(
+        '--spatial_weight', 
+        type=float, 
+        default=0.7, 
+        help="Weight for spatial distance in correspondence. Default: 0.7"
+    )
+    parser.add_argument(
+        '--color_weight', 
+        type=float, 
+        default=0.3, 
+        help="Weight for color difference in correspondence. Default: 0.3"
+    )
+    parser.add_argument(
+        '--distance_threshold', 
+        type=float, 
+        default=None,
+        help="Max distance for point correspondences. If not set, no threshold is used."
+    )
+
+    args = parser.parse_args()
+
+    # File Collection
+    ply_files = []
+    if args.directory:
+        print(f"Searching for .ply files in directory: {args.directory}")
+        # Check if directory exists
+        if not os.path.isdir(args.directory):
+            parser.error(f"Directory not found: {args.directory}")
+        ply_files = sorted([
+            os.path.join(args.directory, f) for f in os.listdir(args.directory) if f.lower().endswith('.ply')
+        ])
+    elif args.models:
+        print("Using provided list of models.")
+        ply_files = args.models
+
+    # Ensure we have at least 2 models to work with
+    if len(ply_files) < 2:
+        parser.error("At least two .ply models are required for interpolation, but found " + str(len(ply_files)))
+        
+    print(f"\nFound {len(ply_files)} models for processing.")
+
+    # Ensure output directory exists
+    os.makedirs(args.output_dir, exist_ok=True)
+    print(f"Output will be saved to: {args.output_dir}\n")
 
     # Load models
     point_models = []
     for ply_file in ply_files:
         pm = PointModel()
-        pm.load_ply(os.path.join(directory, ply_file))
+        pm.load_ply(os.path.join(args.directory, ply_file))
         point_models.append(pm)
     
     interp = GaussianInterpolator(device='cuda') 
     interp.load_pointmodels(point_models)
-    interp.build_correspondences(distance_threshold=3)    
+    interp.build_correspondences(spatial_weight=args.spatial_weight, color_weight=args.color_weight, distance_threshold=args.distance_threshold)    
 
-    models_to_create = 10
+    models_to_create = args.models_to_create
 
     for model_idx in tqdm(range(0, len(interp.models)-1), desc="Interpolating"):
     #interpolate
         for i in tqdm(range(0, models_to_create+1), desc="Saving PLYs"):
-            interp.save_interpolated_ply(model_idx, model_idx+1, i/models_to_create, os.path.join(output_dir, "interpolated_sequence_frame"+str(i + models_to_create * model_idx)+".ply"))
+            interp.save_interpolated_ply(model_idx, model_idx+1, i/models_to_create, os.path.join(args.output_dir, "interpolated_sequence_frame"+str(i + models_to_create * model_idx)+".ply"))
