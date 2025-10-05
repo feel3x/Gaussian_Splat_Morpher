@@ -388,7 +388,7 @@ if(__name__ == "__main__"):
     point_models = []
     for ply_file in ply_files:
         pm = PointModel()
-        pm.load_ply(os.path.join(args.directory, ply_file))
+        pm.load_ply(ply_file)
         if(args.recenter_models):
             pm.recenter_point_cloud()
         if(args.normalize_scales):

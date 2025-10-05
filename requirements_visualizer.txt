@@ -1,0 +1,6 @@
+numpy==2.3.2
+plyfile==1.1.2
+torch
+tqdm==4.67.0
+gsplat
+viser
