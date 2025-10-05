@@ -60,7 +60,13 @@ class GsplatViserViewer:
         self.render_w = 1920
         self.render_h = 1080
 
-        
+        self._auto_rotate_enabled = False
+        self._rotation_speed = 10.0  # degrees per frame
+        self._last_rotation_time = time.time()
+
+        self._auto_interp_enabled = False
+        self._interp_direction = 1.0  # forward or backward
+        self._interp_speed = 0.05  # slider change per update
 
         # GUI
         with self.server.gui.add_folder("Controls"):
@@ -69,6 +75,20 @@ class GsplatViserViewer:
             )
             self.interpolation_slider.on_update(self._on_slider_update)
 
+            self.auto_interp_checkbox = self.server.gui.add_checkbox(
+                label="Enable Auto-Interpolation",
+                initial_value=False,
+                hint="Continuously move the interpolation slider back and forth.",
+            )
+            self.auto_interp_checkbox.on_update(self._on_auto_interp_update)
+
+            self.auto_rotate_checkbox = self.server.gui.add_checkbox(
+                label="Enable Auto-Rotate",
+                initial_value=False,
+                hint="Automatically rotate the camera around the model."
+            )
+            self.auto_rotate_checkbox.on_update(self._on_auto_rotate_update)
+
             self.fps_label = self.server.gui.add_number(label="Render FPS", initial_value=0, disabled=True)
 
         # register client connect/disconnect
@@ -76,6 +96,8 @@ class GsplatViserViewer:
         server.on_client_disconnect(self._disconnect_client)
 
         self._clients = {}
+
+        self._start_background_tasks()
 
     def _on_slider_update(self, event):
         value = self.interpolation_slider.value - 1
@@ -90,6 +112,14 @@ class GsplatViserViewer:
         
         for cid, client in list(self._clients.items()):
             self._render_for_client(client)
+    
+    def _on_auto_rotate_update(self, event):
+        self._auto_rotate_enabled = self.auto_rotate_checkbox.value
+        print(f"Auto-rotate {'enabled' if self._auto_rotate_enabled else 'disabled'}")
+
+    def _on_auto_interp_update(self, event):
+        self._auto_interp_enabled = self.auto_interp_checkbox.value
+        print(f"Auto-interpolation {'enabled' if self._auto_interp_enabled else 'disabled'}")
 
     def _connect_client(self, client: viser.ClientHandle):
         self._clients[client.client_id] = client
@@ -203,6 +233,63 @@ class GsplatViserViewer:
             format="jpeg",
             jpeg_quality=70,
         )
+
+    def _start_background_tasks(self):
+        """Background loop for camera rotation and auto interpolation."""
+        import threading
+
+        def loop():
+            while True:
+                # Auto-rotation
+                if self._auto_rotate_enabled:
+                    for cid, client in list(self._clients.items()):
+                        self._rotate_camera(client)
+                        self._render_for_client(client)
+
+                # Auto-interpolation
+                if self._auto_interp_enabled:
+                    self._update_auto_interpolation()
+
+                time.sleep(0.05)  # ~20 FPS
+
+        thread = threading.Thread(target=loop, daemon=True)
+        thread.start()
+
+    def _rotate_camera(self, client: viser.ClientHandle):
+        """Orbit the camera around the model center."""
+        camera = client.camera
+
+        target = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+
+        offset = camera.position - target
+
+        theta = np.radians(self._rotation_speed)
+        rot_z = np.array([
+                [np.cos(theta), -np.sin(theta), 0],
+                [np.sin(theta),  np.cos(theta), 0],
+                [0, 0, 1],
+            ])
+        new_offset = rot_z @ offset
+
+        # Update camera position and look at target
+        camera.position = target + new_offset
+        camera.look_at = target
+
+    def _update_auto_interpolation(self):
+        """Continuously moves the interpolation slider back and forth."""
+        value = self.interpolation_slider.value
+        decimal = value - int(value)
+        value += self._interp_direction * (0.001 if decimal<0.01 or decimal > 0.99 else self._interp_speed)
+        # Bounce between slider min and max
+        if value >= len(self.interpolator.models):
+            value = len(self.interpolator.models)
+            self._interp_direction = -1.0
+        elif value <= 1.0:
+            value = 1.0
+            self._interp_direction = 1.0
+
+        self.interpolation_slider.value = value
+        self._on_slider_update(None)
 
 
 def main():
