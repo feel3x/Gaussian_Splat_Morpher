@@ -326,6 +326,12 @@ if(__name__ == "__main__"):
         help="Number of intermediate models to generate. Default: 10"
     )
     parser.add_argument(
+        '--direct_interpolation_value', 
+        type=float, 
+        default=None, 
+        help="Directly export a PLY with a certain interpolation value. Note: 0.0 - 1.0 is between Model #1 and Model #2. 1.0 - 2.0 is between Model #2 and Model #3..."
+    )
+    parser.add_argument(
         '--spatial_weight', 
         type=float, 
         default=0.7, 
@@ -346,7 +352,7 @@ if(__name__ == "__main__"):
     parser.add_argument(
         '--batch_size', 
         type=int, 
-        default=2048,
+        default=512,
         help="Size of point batches to process. Lower for less GPU memory usage."
     )
     parser.add_argument(
@@ -399,9 +405,19 @@ if(__name__ == "__main__"):
     interp.load_pointmodels(point_models)
     interp.build_correspondences(spatial_weight=args.spatial_weight, color_weight=args.color_weight, distance_threshold=args.distance_threshold, batch_size=args.batch_size)    
 
-    models_to_create = args.models_to_create
-
-    for model_idx in tqdm(range(0, len(interp.models)-1), desc="Interpolating"):
-    #interpolate
-        for i in tqdm(range(0, models_to_create+1), desc="Saving PLYs"):
-            interp.save_interpolated_ply(model_idx, model_idx+1, i/models_to_create, os.path.join(args.output_dir, "interpolated_sequence_frame"+str(i + models_to_create * model_idx)+".ply"))
+    if args.direct_interpolation_value is not None:
+        value = args.direct_interpolation_value
+        idx_a = int(value)
+        t = value - idx_a
+        idx_b = idx_a + 1
+        if(idx_b > len(interp.models) - 1):
+            idx_a -= 1
+            idx_b -= 1
+            t=1
+        interp.save_interpolated_ply(idx_a, idx_b, t, os.path.join(args.output_dir, "interpolated_model.ply"))
+    else:
+        models_to_create = args.models_to_create
+        for model_idx in tqdm(range(0, len(interp.models)-1), desc="Interpolating"):
+        #interpolate
+            for i in tqdm(range(0, models_to_create+1), desc="Saving PLYs"):
+                interp.save_interpolated_ply(model_idx, model_idx+1, i/models_to_create, os.path.join(args.output_dir, "interpolated_sequence_frame"+str(i + models_to_create * model_idx)+".ply"))

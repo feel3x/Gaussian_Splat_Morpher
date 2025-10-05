@@ -10,7 +10,7 @@ This file contains original code by Felix Hirt, licensed under MIT.
 import argparse
 import time
 from typing import Tuple
-
+import time
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -60,12 +60,16 @@ class GsplatViserViewer:
         self.render_w = 1920
         self.render_h = 1080
 
+        
+
         # GUI
         with self.server.gui.add_folder("Controls"):
             self.interpolation_slider = self.server.gui.add_slider(
-                "Interpolation", min=1, max=len(interpolator.models), step=0.001, initial_value=1
+                "Interpolation", min=1, max=len(interpolator.models), marks=range(1, len(interpolator.models)), step=0.001, initial_value=1
             )
             self.interpolation_slider.on_update(self._on_slider_update)
+
+            self.fps_label = self.server.gui.add_number(label="Render FPS", initial_value=0, disabled=True)
 
         # register client connect/disconnect
         server.on_client_connect(self._connect_client)
@@ -148,6 +152,7 @@ class GsplatViserViewer:
         return means, quats, scales, opacities, colors, sh_degree
 
     def _render_for_client(self, client: viser.ClientHandle):
+        start_time = time.time()
         camera = client.camera
         img_wh = (self.render_w, self.render_h)
         c2w = CameraHelpers.c2w_from_camera(camera)
@@ -186,6 +191,12 @@ class GsplatViserViewer:
             )
 
         img = render_colors[0, ..., 0:3].cpu().numpy()
+
+        end_time = time.time()
+        dt = end_time - start_time
+        fps = 1.0 / dt if dt > 0 else 0.0
+
+        self.fps_label.value = fps
 
         client.scene.set_background_image(
             img,
@@ -238,7 +249,7 @@ def main():
     parser.add_argument(
         '--batch_size', 
         type=int, 
-        default=2048,
+        default=512,
         help="Size of point batches to process. Lower for less GPU memory usage."
     )
     parser.add_argument(
